@@ -141,10 +141,10 @@ if __name__ == "__main__":
             "You just need to install a few things. "
             "```python\nfrom fastapi import FastAPI\napp = FastAPI()\n```\n"
             "More text after the code block. This is still part of the first section. "
-            "The section continues for a while, making sure it has more than 400 tokens." * 50
-            "\n\nSecond Section Header\n\n"
-            "This is the second section. It explains advanced features. "
-            "This part is also quite long, to test sentence splitting. " * 40
+            "The section continues for a while, making sure it has more than 400 tokens." * 50 +
+            "\n\nSecond Section Header\n\n" +
+            "This is the second section. It explains advanced features. " +
+            "This part is also quite long, to test sentence splitting. " * 40 +
             "```python\n@app.get(\"/\")\nasync def read_root():\n    return {\"Hello\": \"World\"}\n```\n"
             "Final paragraph of the document."
         ),
