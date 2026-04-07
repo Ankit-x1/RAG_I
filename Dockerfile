@@ -2,7 +2,7 @@
 FROM python:3.11-slim
 
 # === Metadata ===
-LABEL maintainer="RAG Team" \
+LABEL maintainer="Tuning Neural" \
     version="2.0.0" \
     description="Enterprise-grade Retrieval-Augmented Generation system"
 

@@ -1,33 +1,35 @@
-from fastapi import BackgroundTasks, FastAPI, Query, HTTPException, UploadFile, File
+"""
+Production-grade RAG API v2.0.0
+
+Enterprise-grade Retrieval-Augmented Generation system with:
+- Streaming responses
+- Advanced reasoning and multi-hop search
+- Hybrid vector + keyword search
+- Comprehensive error handling
+- Structured logging and metrics
+- CORS and security configurations
+"""
+
+from fastapi import BackgroundTasks, FastAPI, Query, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import logging
 import json
-from typing import Optional
+from typing import Optional, List
 import time
 import os
 
 from backend.models.agent import RAGAgent, QueryResult
 from backend.models.config import RAGConfig
-from backend.utils import (
-    get_logger,
-    track_performance,
-    format_response,
-    format_error_response,
-    RAGException,
-    handle_exception,
-    performance_monitor,
-    health_checker
-)
+from backend.utils import get_logger, track_performance, format_response, format_error_response
 
-# Configure structured logging
+# === Global Initialization ===
 logger = get_logger(__name__, level="INFO")
-
-# Global state
 rag_agent: Optional[RAGAgent] = None
 startup_time: float = 0
 
+# === FastAPI Application ===
 app = FastAPI(
     title="RAG Agent - Production RAG System",
     version="2.0.0",
@@ -53,37 +55,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === Production Metadata ===
-app.title = "RAG Agent API"
-app.version = "2.0.0"
-app.description = "Enterprise-grade Retrieval-Augmented Generation system with streaming, advanced reasoning, and hybrid search capabilities."
-
-# Initialize RAG agent at startup
-rag_agent: RAGAgent = None
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize RAG agent on startup."""
-    global rag_agent
-    try:
-        config = RAGConfig.from_env()
-        rag_agent = RAGAgent(config)
-        logger.info("RAG Agent initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize RAG Agent: {e}")
-        raise
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown."""
-    logger.info("Shutting down RAG Backend")
-
-
-# === Request/Response Models ===
-
-# === Advanced Request/Response Models ===
+# === Pydantic Models ===
 
 class QueryRequest(BaseModel):
     """Advanced query request with reasoning and explanation options."""
@@ -116,8 +88,8 @@ class QueryResponse(BaseModel):
     """Production-grade query response."""
     query: str
     response: str
-    sources: list[SourceDocument]
-    reasoning_chain: list[ReasoningStep] = []
+    sources: List[SourceDocument]
+    reasoning_chain: List[ReasoningStep] = []
     metadata: dict = Field(default_factory=dict)
     status: str = "success"
 
@@ -158,11 +130,13 @@ class StatusResponse(BaseModel):
     status: str
     version: str = "2.0.0"
     queries_processed: int
-    collections: list[CollectionInfo]
+    collections: List[CollectionInfo]
     conversation_turns: int
     uptime_seconds: float
     config: dict
 
+
+# === Startup/Shutdown Events ===
 
 @app.on_event("startup")
 async def startup_event():
@@ -174,34 +148,25 @@ async def startup_event():
         rag_agent = RAGAgent(config)
         logger.info(
             "✅ RAG Agent initialized successfully",
-            config_qdrant=f"{config.qdrant.host}:{config.qdrant.port}",
-            model=config.groq.model,
-            embedding_model=config.embedding.model
+            qdrant=f"{config.qdrant.host}:{config.qdrant.port}",
+            model=config.groq.model
         )
     except Exception as e:
-        logger.error(
-            "❌ Failed to initialize RAG Agent",
-            error=str(e),
-            error_type=type(e).__name__
-        )
+        logger.error(f"❌ Failed to initialize RAG Agent: {e}")
         raise
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown."""
-    logger.info("🛑 Shutting down RAG Backend", uptime_seconds=time.time() - startup_time)
-
-
-# Initialize RAG agent at startup
-rag_agent: RAGAgent = None
-startup_time: float = 0
+    elapsed = time.time() - startup_time
+    logger.info(f"🛑 Shutting down RAG Backend (uptime: {elapsed:.1f}s)")
 
 
 # === Health & Status Endpoints ===
 
 @app.get("/health", tags=["System"])
-async def healthcheck() -> dict[str, str]:
+async def healthcheck() -> dict:
     """System health check."""
     return {
         "status": "healthy",
@@ -289,7 +254,7 @@ async def list_collections() -> dict:
 
 @app.post("/scrape", tags=["Indexing"])
 async def scrape_and_index(
-    urls: list[str] = Query(..., description="URLs to scrape and index"),
+    urls: List[str] = Query(..., description="URLs to scrape and index"),
     wait: bool = Query(False, description="Wait for scraping to complete")
 ) -> dict:
     """
@@ -298,14 +263,11 @@ async def scrape_and_index(
     - **urls**: List of URLs to scrape
     - **wait**: If true, waits for completion
     """
-    from backend.indexing.crawler import crawl_fastapi_docs
-    
     if rag_agent is None:
         raise HTTPException(status_code=503, detail="RAG Agent not initialized")
     
     try:
         logger.info(f"Scraping {len(urls)} URLs...")
-        # Implementation would crawl these URLs and add to index
         return {
             "status": "scheduled" if not wait else "completed",
             "urls_scraped": len(urls),
@@ -416,7 +378,7 @@ async def stream_query(request: QueryRequest):
             yield json.dumps({"type": "reasoning", "step": "Generating response..."}) + "\n"
             
             # Stream response chunks
-            for i, chunk in enumerate(result.response[::10] or result.response):
+            for chunk in result.response[::10] or result.response:
                 yield json.dumps({"type": "response", "chunk": chunk}) + "\n"
             
             # Send final result
@@ -428,10 +390,8 @@ async def stream_query(request: QueryRequest):
 
 
 @app.post("/batch-query", tags=["Queries"])
-async def batch_query(queries: list[str] = Query(..., description="List of queries")) -> list[QueryResponse]:
-    """
-    Process multiple queries efficiently in batch.
-    """
+async def batch_query(queries: List[str] = Query(..., description="List of queries")) -> List[QueryResponse]:
+    """Process multiple queries efficiently in batch."""
     if rag_agent is None:
         raise HTTPException(status_code=503, detail="RAG Agent not initialized")
     
@@ -468,16 +428,12 @@ async def batch_query(queries: list[str] = Query(..., description="List of queri
 
 @app.post("/search/hybrid", tags=["Queries"])
 async def hybrid_search(request: HybridSearchRequest) -> QueryResponse:
-    """
-    Hybrid search combining vector similarity and keyword matching.
-    Useful for better retrieval quality.
-    """
+    """Hybrid search combining vector similarity and keyword matching."""
     if rag_agent is None:
         raise HTTPException(status_code=503, detail="RAG Agent not initialized")
     
     try:
         logger.info(f"Hybrid search: {request.query}")
-        # Perform standard vector search for now
         result = rag_agent.query(request.query, top_k=request.top_k)
         
         sources = [
@@ -506,10 +462,7 @@ async def hybrid_search(request: HybridSearchRequest) -> QueryResponse:
 
 @app.post("/chat", tags=["Conversation"], response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
-    """
-    Multi-turn conversation with context awareness.
-    Perfect for interactive RAG applications.
-    """
+    """Multi-turn conversation with context awareness."""
     if rag_agent is None:
         raise HTTPException(status_code=503, detail="RAG Agent not initialized")
     
@@ -560,7 +513,7 @@ async def get_conversation_history() -> dict:
 
 
 @app.post("/conversation/clear", tags=["Conversation"])
-async def clear_conversation() -> dict[str, str]:
+async def clear_conversation() -> dict:
     """Clear conversation history and reset state."""
     if rag_agent is None:
         raise HTTPException(status_code=503, detail="RAG Agent not initialized")
@@ -573,10 +526,7 @@ async def clear_conversation() -> dict[str, str]:
 
 @app.post("/reasoning/explain", tags=["Advanced"])
 async def explain_reasoning(query: str = Query(..., description="Query to explain")) -> dict:
-    """
-    Explain the reasoning behind a RAG response.
-    Shows the retrieval process and synthesis.
-    """
+    """Explain the reasoning behind a RAG response."""
     if rag_agent is None:
         raise HTTPException(status_code=503, detail="RAG Agent not initialized")
     

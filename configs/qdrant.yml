@@ -1,0 +1,228 @@
+"""
+Production configuration file for Qdrant vector database.
+Includes recommended settings for performance, reliability, and scalability.
+"""
+
+# === Qdrant Production Configuration ===
+
+# DEPLOYMENT SETTINGS
+deployment:
+  # Use mounted volumes for persistence with docker-compose
+  volumes:
+    - ./data/qdrant:/qdrant/storage
+    - ./data/qdrant/snapshots:/qdrant/snapshots
+  
+  # Port configuration
+  ports:
+    api: 6333
+    grpc: 6334
+  
+  # Resource limits
+  resources:
+    memory: "2G"
+    cpus: "2"
+
+# DATABASE SETTINGS
+database:
+  # Snapshot and recovery configuration
+  snapshots:
+    enabled: true
+    schedule: "0 2 * * *"  # Daily at 2 AM
+    snapshots_dir: "/qdrant/snapshots"
+    compression: "lz4"
+  
+  # Write-ahead log for durability
+  wal:
+    enabled: true
+    wal_capacity_mb: 200
+    wal_segments_ahead: 0
+  
+  # Memory optimization
+  quantum_size: 16  # Quantization for 16-dimensional vectors
+  prefer_mmap: true  # Use memory-mapped files for large collections
+
+# VECTOR COLLECTION SETTINGS
+vectors:
+  # Our embedding dimensions (all-MiniLM-L6-v2 = 384)
+  embedding_dimension: 384
+  
+  # Vector similarity metric (cosine is standard for embeddings)
+  similarity: "Cosine"
+  
+  # Indexing configuration
+  indexing:
+    type: "hnsw"  # Hierarchical Navigable Small World
+    ef_construct: 200
+    max_m: 16
+    ef_search: 100
+  
+  quantization:
+    enabled: false  # Disabled for production accuracy
+    binary: false
+
+# COLLECTION CONFIGURATION
+collection:
+  # Default collection name
+  name: "documents"
+  
+  # Payload (metadata) schema
+  payload_schema:
+    title:
+      type: "text"
+    url:
+      type: "text"
+    section:
+      type: "text"
+    chunk_index:
+      type: "integer"
+    source_type:
+      type: "categorical"
+    created_at:
+      type: "date"
+    updated_at:
+      type: "date"
+    relevance_score:
+      type: "float"
+  
+  # Replication for high availability
+  replication_factor: 1  # Change to 2+ for multi-node cluster
+  shard_number: 1  # Increase for horizontal scaling
+  
+  # Write consistency
+  write_consistency_factor: 1  # Change to replication_factor for stronger consistency
+
+# PERFORMANCE TUNING
+performance:
+  # Read/write parallelism
+  thread_pool_size: 8
+  
+  # Connection pooling
+  max_connections: 100
+  
+  # Batch operation settings
+  max_batch_size: 10000
+  
+  # Timeout settings (in seconds)
+  read_timeout: 30
+  write_timeout: 60
+  
+  # Cache settings
+  vector_cache_enabled: true
+  vector_cache_size_mb: 512
+
+# SECURITY SETTINGS
+security:
+  # API key authentication
+  api_key: "${QDRANT_API_KEY}"  # Set via environment variable
+  
+  # Enable read-only mode for backups
+  read_only: false
+  
+  # CORS configuration for web clients
+  cors:
+    allow_origins: ["http://localhost:3000", "http://localhost:8000"]
+    allow_credentials: true
+    allow_methods: ["GET", "POST", "PUT", "DELETE"]
+    allow_headers: ["*"]
+
+# MONITORING & LOGGING
+monitoring:
+  # Logging level (DEBUG, INFO, WARN, ERROR)
+  log_level: "INFO"
+  
+  # Access logging
+  access_log: true
+  
+  # Health check endpoint
+  health_check:
+    enabled: true
+    interval_seconds: 10
+    timeout_seconds: 5
+  
+  # Metrics (compatible with Prometheus)
+  metrics:
+    enabled: true
+    port: 9090
+
+# BACKUP & RECOVERY
+backup:
+  # Automatic backup schedule
+  schedule: "0 3 * * *"  # Daily at 3 AM
+  
+  # Backup retention
+  retention_days: 30
+  
+  # Backup location
+  destination: "${BACKUP_LOCATION}/qdrant"
+  
+  # Compression for backups
+  compression: "lz4"
+
+# CLUSTER CONFIGURATION (For multi-node deployments)
+cluster:
+  enabled: false  # Set to true for cluster mode
+  
+  cluster_config:
+    # Consensus settings
+    consensus:
+      tick_period_ms: 100
+      
+    # Gossip settings for node discovery
+    gossip:
+      tick_period_ms: 40
+      propogation_timeout_ms: 3600000
+      max_gossip_delay_ms: 500
+  
+  # For single-node, use embedded Raft
+  raft:
+    enabled: true
+
+# RATE LIMITING & THROTTLING
+rate_limiting:
+  enabled: true
+  
+  requests_per_second: 1000
+  burst_size: 5000
+  
+  # Per-client limits
+  per_client:
+    requests_per_second: 100
+
+# STORAGE OPTIMIZATION
+storage:
+  # Point IDs reuse after deletion
+  snapshots_count_to_keep: 3
+  
+  # Chunk size for writes
+  preferred_chunk_size: 5000
+  
+  # Memory-mapped file usage
+  use_mmap: true
+
+# INTEGRATION SETTINGS
+integration:
+  # FastAPI/backend service integration
+  fastapi:
+    host: "localhost"
+    port: 6333
+    timeout_seconds: 30
+    retry_attempts: 3
+    retry_delay_seconds: 1
+  
+  # Embedding service configuration
+  embedding_service:
+    model: "all-MiniLM-L6-v2"
+    output_dimension: 384
+    batch_size: 32
+
+# === Docker Compose Environment Variables ===
+# Add to docker-compose.yml services:
+#
+# environment:
+#   QDRANT_API_KEY: "your-secret-key"
+#   QDRANT_READ_ONLY_MODE: "false"
+#   QDRANT_TELEMETRY_DISABLED: "true"  # Disable if no telemetry
+#   QDRANT_FILES_STORAGE_PATH: "/qdrant/storage"
+#   QDRANT_SNAPSHOTS_STORAGE_PATH: "/qdrant/snapshots"
+#   QDRANT_HEAP_SIZE_MB: "1024"
+#   QDRANT_ALLOWED_ORIGINS: "localhost:3000,localhost:8000"

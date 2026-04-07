@@ -1,0 +1,167 @@
+version: '3.8'
+
+services:
+  # === FastAPI RAG Backend (Production) ===
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: rag_backend
+
+    ports:
+      - "8000:8000" # API
+      - "9090:9090" # Metrics (if enabled)
+
+    environment:
+      # === Qdrant Configuration ===
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-qdrant-secret-key}
+      QDRANT_TIMEOUT: "30"
+
+      # === Groq LLM Configuration ===
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_MODEL: "mixtral-8x7b-32768"
+      GROQ_TIMEOUT: "60"
+
+      # === Embedding Configuration ===
+      EMBEDDING_MODEL: "all-MiniLM-L6-v2"
+      EMBEDDING_DIMENSION: 384
+      EMBEDDING_BATCH_SIZE: 32
+
+      # === Application Configuration ===
+      PYTHONUNBUFFERED: 1
+      LOG_LEVEL: "INFO"
+      ENVIRONMENT: "production"
+
+      # === Cache Configuration ===
+      CACHE_ENABLED: "true"
+      EMBEDDING_CACHE_SIZE: 10000
+      QUERY_CACHE_SIZE: 1000
+      CACHE_TTL_SECONDS: 86400
+
+      # === API Configuration ===
+      API_VERSION: "2.0.0"
+      CORS_ORIGINS: '["http://localhost:3000", "http://localhost:4000", "http://localhost:8000", "http://0.0.0.0:8000"]'
+      RATE_LIMIT_ENABLED: "true"
+      MAX_BATCH_SIZE: 50
+
+    depends_on:
+      qdrant:
+        condition: service_healthy
+
+    volumes:
+      - ./backend:/app/backend
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./configs:/app/configs
+
+    # Health check
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    networks:
+      - rag_network
+
+  # === Qdrant Vector Database (Production) ===
+  qdrant:
+    image: qdrant/qdrant:latest
+
+    container_name: rag_qdrant
+
+    ports:
+      - "6333:6333" # HTTP API
+      - "6334:6334" # gRPC API
+
+    environment:
+      # === Database Configuration ===
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-qdrant-secret-key}
+      QDRANT_TELEMETRY_DISABLED: "true"
+      QDRANT_READ_ONLY_MODE: "false"
+
+      # === Storage Configuration ===
+      QDRANT_FILES_STORAGE_PATH: "/qdrant/storage"
+      QDRANT_SNAPSHOTS_STORAGE_PATH: "/qdrant/snapshots"
+
+      # === Performance Tuning ===
+      QDRANT_HEAP_SIZE_MB: "1024"
+      QDRANT_SERVICE_HTTP_PORT: "6333"
+      QDRANT_SERVICE_GRPC_PORT: "6334"
+
+      # === Snapshot Configuration ===
+      QDRANT_SNAPSHOTS_ENABLED: "true"
+
+      # === CORS Configuration ===
+      QDRANT_ALLOWED_ORIGINS: "localhost:3000,localhost:8000,0.0.0.0:8000"
+
+      # === Logging ===
+      QDRANT_LOG_LEVEL: "info"
+
+    volumes:
+      # Persistent storage for collections and data
+      - qdrant_storage:/qdrant/storage
+      - qdrant_snapshots:/qdrant/snapshots
+      # Optional: Mount configuration file
+      - ./configs/qdrant.yml:/qdrant/config.yml
+
+    # Health check
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://qdrant:6333/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 1G
+
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    networks:
+      - rag_network
+
+# === Named Volumes for Persistence ===
+volumes:
+  qdrant_storage:
+    driver: local
+  qdrant_snapshots:
+    driver: local
+
+# === Network Definition ===
+networks:
+  rag_network:
+    driver: bridge
