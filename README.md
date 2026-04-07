@@ -1,6 +1,6 @@
 # Retrieval Augmented Generation (RAG) Project
 
-This project implements a Retrieval Augmented Generation (RAG) system to enhance AI responses by grounding them in a knowledge base of relevant documents. The system aims to provide more accurate, current, and contextually rich answers by retrieving information from various sources (web pages, PDFs, etc.) and feeding it to a large language model (LLM). The goal is to overcome the limitations of LLMs' static training data, hallucination tendencies, and lack of real-time information access, thereby improving the reliability and trustworthiness of AI-generated content.
+This project implements the ingestion side of a Retrieval Augmented Generation (RAG) system. It crawls FastAPI documentation, chunks the extracted content, generates embeddings, and stores those vectors in Qdrant so an application layer can retrieve grounded context later.
 
 ## Setup Instructions
 
@@ -33,13 +33,25 @@ To start the FastAPI backend server:
 poetry run uvicorn backend.api.main:app --reload
 ```
 
+Available endpoints:
+
+- `GET /health` returns a basic health response.
+- `POST /index` schedules the indexing pipeline in the background.
+- `POST /index?wait=true` runs the indexing pipeline inline and waits for completion.
+
+To run the indexing pipeline directly without the API:
+
+```bash
+poetry run python -m backend.indexing.pipeline
+```
+
 ## Architecture Diagram
 
 ```
-+------------------+     +-----------------------+     +-----------------+
-|   User/Client    |<--->|      FastAPI App      |<--->|   LLM (Groq)    |
-|                  |     |  (backend.api.main)   |     |                 |
-+------------------+     +----------^------------+     +-----------------+
++------------------+     +-----------------------+
+|   User/Client    |<--->|      FastAPI App      |
+|                  |     |  (backend.api.main)   |
++------------------+     +----------^------------+
                                     |
                                     v
 +------------------+     +-----------------------+     +-----------------+
@@ -52,10 +64,4 @@ poetry run uvicorn backend.api.main:app --reload
 |  Embedding Model |<----|   Vectorizer          |---->| Qdrant Vector   |
 | (sentence-        |     | (sentence-transformers)|     | Database        |
 | transformers)    |     +-----------------------+     +-----------------+
-                                    ^
-                                    |
-+------------------+                |
-| BM25 Ranker      |----------------+
-| (rank-bm25)      |
-+------------------+
 ```

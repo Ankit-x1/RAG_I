@@ -1,7 +1,6 @@
 import numpy as np
 from typing import List
 from sentence_transformers import SentenceTransformer
-from tqdm import tqdm
 
 class EmbeddingGenerator:
     """

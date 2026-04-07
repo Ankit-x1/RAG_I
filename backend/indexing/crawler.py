@@ -28,6 +28,14 @@ FILTER_SELECTORS = [
     "aside.md-sidebar--secondary",  # Secondary sidebar (table of contents)
 ]
 
+
+def _normalize_url(url: str) -> str:
+    parsed = urlparse(url)
+    path = parsed.path or "/"
+    if path != "/" and path.endswith("/"):
+        path = path[:-1]
+    return parsed._replace(path=path, fragment="", query="").geturl()
+
 async def _fetch_page(client: httpx.AsyncClient, url: str) -> str:
     """
     Fetches the content of a given URL with retry and rate limiting.
@@ -72,7 +80,8 @@ def _parse_page(html: str, url: str) -> Dict:
         url: The URL of the page.
 
     Returns:
-        A dictionary containing the extracted url, title, content, and code blocks.
+        A dictionary containing the extracted url, title, content, code blocks,
+        and section-aware content.
     """
     soup = BeautifulSoup(html, "html.parser")
 
@@ -96,36 +105,51 @@ def _parse_page(html: str, url: str) -> Dict:
 
     full_content_parts: List[str] = []
     code_blocks: List[str] = []
-    h_tags: List[str] = [] # Collect h1/h2 tags for initial text structure
+    sections: List[Dict[str, str]] = []
+    current_heading = title
+    current_section_parts: List[str] = []
 
     for element in content_text_elements:
-        if element.name in ['h1', 'h2']:
-            h_tags.append(element.get_text(strip=True))
-            # Include headers directly in content for chunking
-            full_content_parts.append(f"\n\n{element.get_text(strip=True)}\n\n")
-        elif element.name == 'pre':
+        if element.name in ["h1", "h2", "h3"]:
+            if current_section_parts:
+                sections.append(
+                    {
+                        "heading": current_heading,
+                        "content": "\n".join(current_section_parts).strip(),
+                    }
+                )
+                current_section_parts = []
+
+            current_heading = element.get_text(strip=True) or title
+            full_content_parts.append(current_heading)
+        elif element.name == "pre":
             code = element.get_text(strip=True)
             code_blocks.append(code)
-            full_content_parts.append(f"\n```python\n{code}\n```\n") # Markdown style for code blocks
+            block = f"```python\n{code}\n```"
+            full_content_parts.append(block)
+            current_section_parts.append(block)
         else:
             text = element.get_text(separator=" ", strip=True)
             if text:
                 full_content_parts.append(text)
+                current_section_parts.append(text)
 
-    # Clean up multiple newlines that might result from stripping
+    if current_section_parts:
+        sections.append(
+            {
+                "heading": current_heading,
+                "content": "\n".join(current_section_parts).strip(),
+            }
+        )
+
     content = "\n".join(full_content_parts).strip()
-    # Replace multiple spaces with a single space
-    content = ' '.join(content.split())
-    # Replace markdown code fences with a single space if it results in empty line
-    content = content.replace("```python\n\n```", "")
-    content = content.replace("```\n\n```", "")
-
 
     return {
         "url": url,
         "title": title,
         "content": content,
         "code_blocks": code_blocks,
+        "sections": sections,
     }
 
 
@@ -138,7 +162,7 @@ async def crawl_fastapi_docs() -> List[Dict]:
         A list of dictionaries, each containing 'url', 'title', 'content',
         and 'code_blocks' for a crawled page.
     """
-    start_url = BASE_URL
+    start_url = _normalize_url(BASE_URL)
     to_visit: asyncio.Queue[str] = asyncio.Queue()
     await to_visit.put(start_url)
     visited: Set[str] = set()
@@ -146,7 +170,7 @@ async def crawl_fastapi_docs() -> List[Dict]:
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         while not to_visit.empty():
-            current_url = await to_visit.get()
+            current_url = _normalize_url(await to_visit.get())
 
             if current_url in visited:
                 continue
@@ -163,13 +187,15 @@ async def crawl_fastapi_docs() -> List[Dict]:
                 soup = BeautifulSoup(html_content, "html.parser")
                 for link_tag in soup.find_all("a", href=True):
                     href = link_tag["href"]
+                    if href.startswith(("mailto:", "tel:", "javascript:")):
+                        continue
+
                     absolute_url = urljoin(current_url, href)
+                    normalized_url = _normalize_url(absolute_url)
 
                     # Only follow links within the FastAPI domain
-                    if absolute_url.startswith(BASE_URL) and absolute_url not in visited:
-                        # Exclude anchor links on the same page and mailto links
-                        if urlparse(absolute_url).fragment == "" and not absolute_url.startswith("mailto:"):
-                            await to_visit.put(absolute_url)
+                    if normalized_url.startswith(BASE_URL) and normalized_url not in visited:
+                        await to_visit.put(normalized_url)
 
             except httpx.HTTPStatusError:
                 logger.error(f"Skipping {current_url} due to HTTP error.")

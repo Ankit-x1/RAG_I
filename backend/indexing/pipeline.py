@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from datetime import datetime
 from typing import Dict, List, Set
 
@@ -17,11 +18,76 @@ logger = logging.getLogger(__name__)
 COLLECTION_NAME = "fastapi_docs"
 VECTOR_SIZE = 384  # Matches 'sentence-transformers/all-MiniLM-L6-v2' output dimension
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333)) # Default gRPC port
+QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))  # Default REST port
 
 # Constants for pipeline
 CHECKPOINT_FILE = "data/processed/last_indexed.json"
 UPLOAD_BATCH_SIZE = 100
+
+
+def _save_checkpoint(indexed_urls: Set[str]) -> None:
+    os.makedirs(os.path.dirname(CHECKPOINT_FILE), exist_ok=True)
+    with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "indexed_urls": sorted(indexed_urls),
+                "last_run_timestamp": datetime.now().isoformat(),
+            },
+            f,
+            indent=2,
+        )
+
+
+def _build_point(chunk: Dict, embedding: List[float]) -> models.PointStruct:
+    chunk_key = "|".join(
+        [
+            chunk["metadata"]["url"],
+            chunk["metadata"].get("section", ""),
+            chunk["text"],
+        ]
+    )
+    point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, chunk_key))
+
+    return models.PointStruct(
+        id=point_id,
+        vector=embedding,
+        payload={
+            **chunk["metadata"],
+            "text": chunk["text"],
+        },
+    )
+
+
+def _upload_chunks(
+    client: QdrantClient,
+    embedder: EmbeddingGenerator,
+    chunks: List[Dict],
+) -> None:
+    current_texts_batch: List[str] = []
+    current_chunks_batch: List[Dict] = []
+
+    for index, chunk in enumerate(chunks):
+        current_texts_batch.append(chunk["text"])
+        current_chunks_batch.append(chunk)
+
+        if len(current_texts_batch) < UPLOAD_BATCH_SIZE and index != len(chunks) - 1:
+            continue
+
+        embeddings = embedder.embed_batch(current_texts_batch)
+        points = [
+            _build_point(current_chunks_batch[item_index], embedding.tolist())
+            for item_index, embedding in enumerate(embeddings)
+        ]
+
+        client.upsert(
+            collection_name=COLLECTION_NAME,
+            points=points,
+            wait=True,
+        )
+        logger.info("Uploaded %s points to Qdrant.", len(points))
+
+        current_texts_batch = []
+        current_chunks_batch = []
 
 async def run_indexing():
     """
@@ -40,7 +106,10 @@ async def run_indexing():
             logger.info(f"Creating Qdrant collection '{COLLECTION_NAME}'...")
             client.create_collection(
                 collection_name=COLLECTION_NAME,
-                vectors_config=models.VectorParams(size=VECTOR_SIZE, distance=models.Distance.COSINE),
+                vectors_config=models.VectorParams(
+                    size=VECTOR_SIZE,
+                    distance=models.Distance.COSINE,
+                ),
             )
             logger.info(f"Collection '{COLLECTION_NAME}' created.")
         else:
@@ -54,7 +123,7 @@ async def run_indexing():
     last_run_timestamp = None
     if os.path.exists(CHECKPOINT_FILE):
         try:
-            with open(CHECKPOINT_FILE, "r") as f:
+            with open(CHECKPOINT_FILE, "r", encoding="utf-8") as f:
                 checkpoint_data = json.load(f)
                 indexed_urls = set(checkpoint_data.get("indexed_urls", []))
                 last_run_timestamp = checkpoint_data.get("last_run_timestamp")
@@ -82,69 +151,18 @@ async def run_indexing():
         logger.info("No new documents to index. Exiting.")
         return
 
-    # 5. Chunk, Embed, and Upload
-    all_chunks: List[Dict] = []
     for doc in new_docs_to_index:
         try:
             chunks = semantic_chunk(doc)
-            all_chunks.extend(chunks)
-            indexed_urls.add(doc["url"]) # Add to set as soon as processed for chunking
+            if not chunks:
+                logger.warning("No chunks generated for %s", doc["url"])
+                continue
+
+            _upload_chunks(client, embedder, chunks)
+            indexed_urls.add(doc["url"])
+            _save_checkpoint(indexed_urls)
         except Exception as e:
-            logger.error(f"Error chunking document {doc['url']}: {e}")
-            # Optionally, we might not add this URL to indexed_urls if chunking failed
-            # But for simplicity, we assume if crawling was successful, we tried to chunk.
-
-    logger.info(f"Total {len(all_chunks)} chunks generated.")
-
-    # Prepare for batch embedding and upload
-    current_texts_batch: List[str] = []
-    current_payloads_batch: List[Dict] = []
-    points_to_upload: List[models.PointStruct] = []
-
-    for i, chunk in enumerate(all_chunks):
-        current_texts_batch.append(chunk["text"])
-        current_payloads_batch.append(chunk["metadata"])
-
-        if len(current_texts_batch) >= UPLOAD_BATCH_SIZE or i == len(all_chunks) - 1:
-            try:
-                embeddings = embedder.embed_batch(current_texts_batch)
-                
-                for j, emb in enumerate(embeddings):
-                    points_to_upload.append(
-                        models.PointStruct(
-                            vector=emb.tolist(),
-                            payload=current_payloads_batch[j],
-                        )
-                    )
-                
-                # Upload to Qdrant in batches
-                if points_to_upload:
-                    client.upsert(
-                        collection_name=COLLECTION_NAME,
-                        points=points_to_upload,
-                        wait=True,
-                    )
-                    logger.info(f"Uploaded {len(points_to_upload)} points to Qdrant.")
-                
-            except Exception as e:
-                logger.error(f"Error embedding or uploading a batch of chunks: {e}")
-            finally:
-                current_texts_batch = []
-                current_payloads_batch = []
-                points_to_upload = []
-
-
-    # 6. Save checkpoint
-    try:
-        os.makedirs(os.path.dirname(CHECKPOINT_FILE), exist_ok=True)
-        with open(CHECKPOINT_FILE, "w") as f:
-            json.dump({
-                "indexed_urls": list(indexed_urls),
-                "last_run_timestamp": datetime.now().isoformat()
-            }, f, indent=2)
-        logger.info(f"Checkpoint saved to {CHECKPOINT_FILE}.")
-    except Exception as e:
-        logger.error(f"Failed to save checkpoint file: {e}")
+            logger.error("Error processing document %s: %s", doc["url"], e)
 
     logger.info("Indexing pipeline finished.")
 
